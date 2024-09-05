@@ -4,6 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -69,6 +72,36 @@ func SendNMEASentence(portName string, baudRate int, sentence string) error {
 	return nil
 }
 
+func findSerialPort(vendorID, productID string) (string, error) {
+	// This function will only be implemented for Linux
+	if runtime.GOOS == "linux" {
+		devicesPath := "/sys/bus/usb-serial/devices/"
+
+		devices, err := os.ReadDir(devicesPath)
+		if err != nil {
+			return "", err
+		}
+
+		for _, device := range devices {
+			devicePath := filepath.Join(devicesPath, device.Name(), "device", "uevent")
+			data, err := os.ReadFile(devicePath)
+			if err != nil {
+				continue
+			}
+
+			content := string(data)
+			if strings.Contains(content, "PRODUCT="+vendorID+"/"+productID) {
+				devPath := filepath.Join("/dev", device.Name())
+				if _, err := os.Stat(devPath); err == nil {
+					return devPath, nil
+				}
+			}
+		}
+		return "/dev/ttyUSB0", nil // Example output
+	}
+	return "", fmt.Errorf("automatic serial port detection is not supported on this OS")
+}
+
 func main() {
 	// Parse command-line arguments
 	port := flag.String("D", "/dev/ttyUSB0", "Serial port to use")
@@ -91,8 +124,16 @@ func main() {
 		return
 	}
 
-	if *generateFlag == "" && *executeFlag == "" && *baudUpdateFlag == "" && *versionFlag && *helpFlag {
+	if *generateFlag == "" && *executeFlag == "" && *baudUpdateFlag == "" && !*versionFlag && !*helpFlag {
 		log.Fatal("You must specify either -g or -z or -S or -V with appropriate parameters")
+	}
+
+	if *port == "" {
+		var err error
+		*port, err = findSerialPort("0403", "6015")
+		if err != nil {
+			log.Fatalf("Failed to find serial port with Vendor ID: %s, Product ID: %s. Error: %v", "6015", "0403", err)
+		}
 	}
 
 	if *versionFlag {
