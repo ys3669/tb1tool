@@ -26,10 +26,10 @@ func CalculateChecksum(sentence string) string {
 func BuildNMEASentence(fields ...string) string {
 	baseSentence := strings.Join(fields, ",")
 	checksum := CalculateChecksum(baseSentence)
-	return fmt.Sprintf("$%s*%s\r\n", baseSentence, checksum)
+	return fmt.Sprintf("$%s*%s", baseSentence, checksum) // Don't append CRLF here, let SendNMEASentence handle it
 }
 
-// SendNMEASentence sends the NMEA sentence over the specified serial port
+// SendNMEASentence sends the NMEA sentence over the specified serial port with CRLF
 func SendNMEASentence(portName string, baudRate int, sentence string) error {
 	config := &serial.Config{
 		Name: portName,
@@ -40,8 +40,10 @@ func SendNMEASentence(portName string, baudRate int, sentence string) error {
 		return err
 	}
 
-	// Write the NMEA sentence
-	_, err = port.Write([]byte(sentence))
+	// Append CRLF to the sentence
+	fullSentence := sentence + "\r\n"
+
+	_, err = port.Write([]byte(fullSentence))
 	if err != nil {
 		return err
 	}
@@ -69,44 +71,15 @@ func SendNMEASentence(portName string, baudRate int, sentence string) error {
 	}
 	defer port.Close()
 
+	fmt.Println("\n\nCheck $PERDACK sentence")//別にプログラム的に探してもいい
 	return nil
-}
-
-func findSerialPort(vendorID, productID string) (string, error) {
-	// This function will only be implemented for Linux
-	if runtime.GOOS == "linux" {
-		devicesPath := "/sys/bus/usb-serial/devices/"
-
-		devices, err := os.ReadDir(devicesPath)
-		if err != nil {
-			return "", err
-		}
-
-		for _, device := range devices {
-			devicePath := filepath.Join(devicesPath, device.Name(), "device", "uevent")
-			data, err := os.ReadFile(devicePath)
-			if err != nil {
-				continue
-			}
-
-			content := string(data)
-			if strings.Contains(content, "PRODUCT="+vendorID+"/"+productID) {
-				devPath := filepath.Join("/dev", device.Name())
-				if _, err := os.Stat(devPath); err == nil {
-					return devPath, nil
-				}
-			}
-		}
-		return "/dev/ttyUSB0", nil // Example output
-	}
-	return "", fmt.Errorf("automatic serial port detection is not supported on this OS")
 }
 
 func main() {
 	// Parse command-line arguments
-	port := flag.String("D", "/dev/ttyUSB0", "Serial port to use")
+	port := flag.String("p", "/dev/tty.usbserial-10", "Serial port to use")//TB-1 on Mac
 	baudRate := flag.Int("s", 38400, "Baud rate for the serial port (default: 38400)")
-	generateFlag := flag.String("g", "", "API,CFG,SYS to generate NMEA sentences")
+	getFlag := flag.String("g", "", "API,CFG,SYS to generate NMEA sentences")
 	executeFlag := flag.String("z", "", "API,CFG,SYS with parameters to send via serial port")
 	baudUpdateFlag := flag.String("S", "", "Send NMEA sentence to update baud rate")
 	versionFlag := flag.Bool("V", false, "Execute SYS [VERSION] command")
@@ -114,6 +87,7 @@ func main() {
 	helpFlag := flag.Bool("help", false, "Display long help message")
 	flag.Parse()
 
+	// Display help if needed
 	if *hFlag {
 		Showh()
 		return
@@ -124,59 +98,10 @@ func main() {
 		return
 	}
 
-	if *generateFlag == "" && *executeFlag == "" && *baudUpdateFlag == "" && !*versionFlag && !*helpFlag {
+	// If no valid options are provided, show an error
+	if *getFlag == "" && *executeFlag == "" && !*versionFlag && *baudUpdateFlag == "" {
 		log.Fatal("You must specify either -g or -z or -S or -V with appropriate parameters")
-	}
-
-	if *port == "" {
-		var err error
-		*port, err = findSerialPort("0403", "6015")
-		if err != nil {
-			log.Fatalf("Failed to find serial port with Vendor ID: %s, Product ID: %s. Error: %v", "6015", "0403", err)
-		}
-	}
-
-	if *versionFlag {
-		nmeaSentence := "PERDSYS,VERSION"
-		formattedSentence := BuildNMEASentence(nmeaSentence)
-		fmt.Printf("Executing SYS [VERSION]: %s\n", formattedSentence)
-		err := SendNMEASentence(*port, *baudRate, formattedSentence)
-		if err != nil {
-			log.Fatalf("Failed to send SYS [VERSION] command: %v", err)
-		}
-		return
-	}
-
-	// Generate NMEA sentences if -g flag is provided
-	if *generateFlag != "" {
-		commands := strings.Split(*generateFlag, ",")
-		for _, cmd := range commands {
-			sentence := BuildNMEASentence("PERDAPI", cmd, "QUERY")
-			fmt.Println(sentence)
-		}
-	}
-
-	// Send NMEA sentences over serial port if -z flag is provided
-	if *executeFlag != "" {
-		commands := strings.Split(*executeFlag, ",")
-		for _, cmd := range commands {
-			parts := strings.Split(cmd, " ")
-			api := parts[0]
-			params := parts[1:]
-			var sentence string
-			if api == "NMEAOUT" {
-				sentence = BuildNMEASentence("PERDCFG", "NMEAOUT")
-			} else if api == "VERSION" {
-				sentence = BuildNMEASentence("PERDSYS", "VERSION")
-			} else {
-				sentence = BuildNMEASentence(append([]string{"PERDAPI", api}, params...)...)
-			}
-			fmt.Println("Sending:", sentence)
-			err := SendNMEASentence(*port, *baudRate, sentence)
-			if err != nil {
-				log.Fatalf("Failed to send NMEA sentence: %v", err)
-			}
-		}
+		Showh()
 	}
 
 	// Send a sentence to update the baud rate if -S flag is provided
@@ -186,6 +111,55 @@ func main() {
 		err := SendNMEASentence(*port, *baudRate, sentence)
 		if err != nil {
 			log.Fatalf("Failed to send baud rate update sentence: %v", err)
+		}
+	}
+
+	// Execute SYS [VERSION] command if -V flag is provided
+	if *versionFlag {
+		nmeaSentence := BuildNMEASentence("PERDSYS", "VERSION")
+		fmt.Printf("Executing SYS [VERSION]: %s\n", nmeaSentence)
+		err := SendNMEASentence(*port, *baudRate, nmeaSentence)
+		if err != nil {
+			log.Fatalf("Failed to send SYS [VERSION] command: %v", err)
+		}
+		return
+	}
+
+	// Query NMEA sentences if -g flag is provided
+	if *getFlag != "" {
+		commands := strings.Split(*getFlag, ",")
+		api := commands[0]
+		sentence := BuildNMEASentence("PERDAPI", api, "QUERY")
+		fmt.Println("Sending:", sentence)
+		err := SendNMEASentence(*port, *baudRate, sentence)
+		if err != nil {
+			log.Fatalf("Failed to send NMEA sentence: %v", err)
+		}
+	}
+
+	// Send NMEA sentences over serial port if -z flag is provided
+	if *executeFlag != "" {
+		// Split -z argument into parts (e.g., "PPS,VCLK,1,0,200,0,0")
+		commands := strings.Split(*executeFlag, ",")
+		api := commands[0]
+		params := commands[1:]
+
+		// Special case for CFG-NMEAOUT
+		if api == "NMEAOUT" {
+			sentence := BuildNMEASentence(append([]string{"PERDCFG", "NMEAOUT"}, params...)...)
+			fmt.Println("Sending:", sentence)
+			err := SendNMEASentence(*port, *baudRate, sentence)
+			if err != nil {
+				log.Fatalf("Failed to send NMEA sentence: %v", err)
+			}
+		} else {
+			// General case for other APIs
+			sentence := BuildNMEASentence(append([]string{"PERDAPI", api}, params...)...)
+			fmt.Println("Sending:", sentence)
+			err := SendNMEASentence(*port, *baudRate, sentence)
+			if err != nil {
+				log.Fatalf("Failed to send NMEA sentence: %v", err)
+			}
 		}
 	}
 }
